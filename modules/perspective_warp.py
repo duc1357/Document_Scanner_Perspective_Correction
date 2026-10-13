@@ -20,48 +20,59 @@ import numpy as np
 # --------------------------------------------------------------------------
 # 1. Tìm contour tờ giấy
 # --------------------------------------------------------------------------
-def get_paper_contour(edged, min_area_ratio=0.10, top_k=5):
+def _quad_from_contour(c, epsilons=(0.02, 0.03, 0.04, 0.05)):
+    """Xấp xỉ contour về tứ giác LỒI; trả None nếu không ra đúng 4 đỉnh."""
+    peri = cv2.arcLength(c, True)
+    for eps in epsilons:
+        approx = cv2.approxPolyDP(c, eps * peri, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            return approx.reshape(4, 2).astype("float32")
+    return None
+
+
+def get_paper_contour(edged, min_area_ratio=0.10, max_area_ratio=0.95, top_k=10):
     """
     Tìm contour lớn nhất và xấp xỉ về đúng 4 đỉnh bằng cv2.approxPolyDP.
 
-    Các điểm làm cho hàm chạy ổn định với ảnh thật:
-      1. MORPH_CLOSE : nối các đoạn viền Canny bị đứt.
-      2. min_area_ratio : bỏ contour nhỏ hơn 10% diện tích ảnh (phím, cốc, ...)
-         -> không bao giờ chọn nhầm vật nhỏ có hình tứ giác.
-      3. convexHull : làm viền lồi, bỏ các chỗ lõm/răng cưa.
-      4. Thử nhiều epsilon (2% -> 6% chu vi) cho tới khi ra đúng 4 đỉnh.
-      5. Fallback minAreaRect nếu vẫn không ra 4 đỉnh.
+    Cách làm:
+      Bước 1 (chính): lấy các contour THẬT, lọc theo diện tích
+        (>= min_area_ratio và <= max_area_ratio diện tích ảnh -> bỏ vật nhỏ
+        và bỏ cả khung viền ảnh), xét từ lớn đến nhỏ, lấy contour đầu tiên
+        xấp xỉ ra tứ giác lồi.
+      Bước 2 (dự phòng): nếu viền giấy bị đứt nên bước 1 thất bại, nối viền
+        bằng MORPH_CLOSE rồi lấy convex hull. Bước này dễ bị nhiễu nền
+        (vân gỗ, ...) nên chỉ dùng khi bước 1 không ra kết quả.
 
     Trả về: mảng float32 shape (4, 2), hoặc None nếu không tìm được.
     """
     h, w = edged.shape[:2]
-    min_area = min_area_ratio * h * w
+    min_area, max_area = min_area_ratio * h * w, max_area_ratio * h * w
 
-    k = max(7, int(0.02 * max(h, w))) | 1          # kernel lẻ, tỉ lệ theo cỡ ảnh
+    # ---- Bước 1: contour thật ------------------------------------------
+    thick = cv2.dilate(edged, np.ones((3, 3), np.uint8), iterations=1)
+    contours, _ = cv2.findContours(thick, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    cands = [c for c in contours if min_area <= cv2.contourArea(c) <= max_area]
+    cands = sorted(cands, key=cv2.contourArea, reverse=True)[:top_k]
+    for c in cands:
+        quad = _quad_from_contour(c)
+        if quad is not None:
+            return quad
+
+    # ---- Bước 2: dự phòng cho viền bị đứt ---------------------------------
+    k = max(7, int(0.02 * max(h, w))) | 1
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
     closed = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, kernel)
-
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
-
-    # Dùng diện tích của hull lồi để lọc/xếp hạng: viền bị hở vẫn có hull
-    # bao trọn tờ giấy, còn vật nhỏ (phím, cốc, ...) bị loại vì quá bé.
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     hulls = [cv2.convexHull(c) for c in contours]
-    hulls = [hl for hl in hulls if cv2.contourArea(hl) >= min_area]
-    if not hulls:
-        return None
+    hulls = [hl for hl in hulls if min_area <= cv2.contourArea(hl) <= max_area]
     hulls = sorted(hulls, key=cv2.contourArea, reverse=True)[:top_k]
-
     for hull in hulls:
-        peri = cv2.arcLength(hull, True)
-        for eps in (0.02, 0.03, 0.04, 0.05, 0.06):
-            approx = cv2.approxPolyDP(hull, eps * peri, True)
-            if len(approx) == 4:
-                return approx.reshape(4, 2).astype("float32")
-
-    # Fallback: hình chữ nhật xoay nhỏ nhất bao contour lớn nhất
-    rect = cv2.minAreaRect(hulls[0])
-    return cv2.boxPoints(rect).astype("float32")
+        quad = _quad_from_contour(hull, (0.02, 0.03, 0.04, 0.05, 0.06))
+        if quad is not None:
+            return quad
+    if hulls:
+        return cv2.boxPoints(cv2.minAreaRect(hulls[0])).astype("float32")
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -71,24 +82,42 @@ def order_points(pts):
     """
     Sắp xếp 4 đỉnh theo thứ tự: Trên-Trái, Trên-Phải, Dưới-Phải, Dưới-Trái.
 
-    Dựa vào tổng s = x + y và hiệu d = x - y  (gốc tọa độ ở góc trên-trái ảnh,
-    trục y hướng xuống):
+    Cách chính - dựa vào tổng s = x + y và hiệu d = x - y (gốc tọa độ ở góc
+    trên-trái ảnh, trục y hướng xuống):
         Trên-Trái  : s nhỏ nhất   (x, y đều nhỏ)
         Dưới-Phải  : s lớn nhất   (x, y đều lớn)
         Trên-Phải  : d lớn nhất   (x lớn, y nhỏ)
         Dưới-Trái  : d nhỏ nhất   (x nhỏ, y lớn)
+
+    Giới hạn: khi tờ giấy xoay nhiều (~30-45 độ), một đỉnh có thể đồng thời
+    là min của s và min của d (hoặc max), khiến 2 vai trò chọn trùng 1 đỉnh.
+    Khi đó dùng cách dự phòng: sắp xếp 4 đỉnh theo góc quanh tâm (theo chiều
+    kim đồng hồ), rồi chọn đỉnh bắt đầu sao cho cạnh trên gần nằm ngang nhất.
     """
     pts = np.asarray(pts, dtype="float32").reshape(4, 2)
     rect = np.zeros((4, 2), dtype="float32")
 
     s = pts[:, 0] + pts[:, 1]          # x + y
     d = pts[:, 0] - pts[:, 1]          # x - y
+    idx = [np.argmin(s), np.argmax(d), np.argmax(s), np.argmin(d)]  # TL TR BR BL
 
-    rect[0] = pts[np.argmin(s)]        # Trên-Trái
-    rect[2] = pts[np.argmax(s)]        # Dưới-Phải
-    rect[1] = pts[np.argmax(d)]        # Trên-Phải
-    rect[3] = pts[np.argmin(d)]        # Dưới-Trái
-    return rect
+    if len(set(idx)) == 4:             # trường hợp bình thường
+        for i, j in enumerate(idx):
+            rect[i] = pts[j]
+        return rect
+
+    # --- Dự phòng: sắp theo góc quanh tâm ---
+    cx, cy = pts.mean(axis=0)
+    cw = pts[np.argsort(np.arctan2(pts[:, 1] - cy, pts[:, 0] - cx))]  # chiều kim đồng hồ
+    best, best_ang = 0, 1e9
+    for i in range(4):
+        v = cw[(i + 1) % 4] - cw[i]    # cạnh "trên" nếu bắt đầu từ đỉnh i
+        if v[0] <= 0:                  # cạnh trên phải đi từ trái sang phải
+            continue
+        ang = abs(np.arctan2(v[1], v[0]))
+        if ang < best_ang:
+            best, best_ang = i, ang
+    return np.roll(cw, -best, axis=0).astype("float32")
 
 
 # --------------------------------------------------------------------------
@@ -142,6 +171,21 @@ def _make_synthetic_photo():
     return bg
 
 
+def mask_edges(image):
+    """Tách tờ giấy theo độ sáng (Otsu) rồi lấy biên -> loại bỏ vân nền (gỗ, ...)."""
+    gray = cv2.GaussianBlur(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (9, 9), 0)
+    _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+    return cv2.Canny(mask, 50, 150)
+
+
+def canny_edges(image):
+    gray = cv2.GaussianBlur(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+    return cv2.dilate(cv2.Canny(gray, 50, 150), np.ones((3, 3), np.uint8))
+
+
 def main():
     if len(sys.argv) > 1:
         image = cv2.imread(sys.argv[1])
@@ -155,13 +199,14 @@ def main():
     ratio = image.shape[0] / 500.0
     small = cv2.resize(image, (int(image.shape[1] / ratio), 500))
 
-    # Tiền xử lý tạm thời bằng Canny
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    edged = cv2.Canny(gray, 50, 150)
-    edged = cv2.dilate(edged, np.ones((3, 3), np.uint8), iterations=1)
-
-    pts = get_paper_contour(edged)
+    # Tiền xử lý tạm thời (TV1 sẽ thay): thử tách giấy theo độ sáng trước,
+    # nếu không ra thì dùng Canny thường.
+    pts, edged = None, None
+    for make_edges in (mask_edges, canny_edges):
+        edged = make_edges(small)
+        pts = get_paper_contour(edged)
+        if pts is not None:
+            break
     if pts is None:
         sys.exit("Không tìm thấy contour tờ giấy.")
 
