@@ -195,6 +195,69 @@ def preprocess_and_detect_edges(
     return gray_blurred, raw_edges, connected_edges
 
 
+def resize_image_with_ratio(
+    image: np.ndarray,
+    target_height: int = 600
+) -> Tuple[np.ndarray, float]:
+    """
+    Chuẩn hóa kích thước ảnh về một chiều cao xác định để tăng tốc độ xử lý
+    và giảm nhiễu hạt/chữ viết li ti khi dò biên mép giấy.
+
+    Args:
+        image (np.ndarray): Ảnh gốc kích thước bất kỳ.
+        target_height (int): Chiều cao mục tiêu sau khi thu nhỏ (mặc định 600px).
+
+    Returns:
+        Tuple[np.ndarray, float]:
+            - resized_image: Ảnh đã đổi kích thước.
+            - ratio: Tỷ lệ co giãn (original_height / target_height) để ánh xạ
+                     tọa độ phát hiện được trở lại kích thước ảnh gốc.
+    """
+    h, w = image.shape[:2]
+    if h <= target_height:
+        return image.copy(), 1.0
+
+    ratio = h / float(target_height)
+    target_width = int(w / ratio)
+    resized = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_AREA)
+    return resized, ratio
+
+
+def robust_edge_detection(
+    image: np.ndarray,
+    blur_kernel: Tuple[int, int] = (5, 5)
+) -> np.ndarray:
+    """
+    Quy trình dò biên vững chắc (Robust Edge Pipeline) cho tài liệu chụp thực tế:
+    Kết hợp Canny nhạy bén + Phép đóng hình thái học mạnh + Ranh giới phân ngưỡng Otsu
+    để giải quyết triệt để tình trạng mép giấy bị đứt đoạn do bóng đổ, ánh sáng loang hoặc vân gỗ.
+
+    Args:
+        image (np.ndarray): Ảnh đầu vào (thường là ảnh đã resize).
+        blur_kernel (Tuple[int, int]): Kích thước cửa sổ Gaussian Blur.
+
+    Returns:
+        np.ndarray: Ảnh nhị phân các cạnh biên khép kín liên tục.
+    """
+    gray = to_grayscale(image)
+    blurred = apply_gaussian_blur(gray, kernel_size=blur_kernel)
+
+    # 1. Canny với ngưỡng nhạy (low=30, high=120)
+    edges = detect_canny_edges(blurred, low_threshold=30, high_threshold=120)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+    edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    # 2. Ngưỡng phân tách Otsu nhằm bù đắp cho các cạnh biên bị mờ nhạt do chênh lệch ánh sáng
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    thresh_edges = detect_canny_edges(thresh, low_threshold=50, high_threshold=150)
+    thresh_closed = cv2.morphologyEx(thresh_edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    # 3. Kết hợp 2 mặt nạ biên (Logical OR)
+    combined = cv2.bitwise_or(edges_closed, thresh_closed)
+    return combined
+
+
+
 # ----------------------------------------------------------------------
 # KIỂM THỬ ĐỘC LẬP (Unit Test / Demo khi chạy trực tiếp file)
 # ----------------------------------------------------------------------
