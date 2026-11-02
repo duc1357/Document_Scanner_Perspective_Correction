@@ -18,6 +18,15 @@ from .perspective_warp import (
     find_document_contour,
     four_point_transform,
     warp_document_pipeline,
+    draw_detected_quad,
+)
+from .orientation_corrector import OrientationCorrector
+from .image_enhancer import (
+    convert_to_grayscale,
+    correct_illumination,
+    sharpen_text,
+    adaptive_threshold,
+    enhance_document,
 )
 
 __all__ = [
@@ -35,4 +44,13 @@ __all__ = [
     "find_document_contour",
     "four_point_transform",
     "warp_document_pipeline",
+    "draw_detected_quad",
+    # Module 3
+    "OrientationCorrector",
+    # Module 4
+    "convert_to_grayscale",
+    "correct_illumination",
+    "sharpen_text",
+    "adaptive_threshold",
+    "enhance_document",
 ]
