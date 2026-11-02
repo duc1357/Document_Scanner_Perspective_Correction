@@ -16,9 +16,17 @@ import cv2
 import numpy as np
 
 try:
-    from modules.edge_detector import resize_image_with_ratio, robust_edge_detection
+    from modules.edge_detector import (
+        resize_image_with_ratio,
+        robust_edge_detection,
+        preprocess_and_detect_edges,
+    )
 except ImportError:
-    from edge_detector import resize_image_with_ratio, robust_edge_detection
+    from edge_detector import (
+        resize_image_with_ratio,
+        robust_edge_detection,
+        preprocess_and_detect_edges,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -212,19 +220,30 @@ def four_point_transform(
 # --------------------------------------------------------------------------
 def warp_document_pipeline(
     image: np.ndarray,
-    target_process_height: int = 600
+    target_process_height: int = 600,
+    blur_kernel: Tuple[int, int] = (5, 5),
+    low_threshold: Optional[int] = None,
+    high_threshold: Optional[int] = None,
+    use_auto_canny: bool = False
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
     """
-    Quy trình ghép nối liên tục:
-    Ảnh gốc -> Resize chuẩn hóa -> Dò biên vững chắc -> Tìm 4 đỉnh -> Map về ảnh gốc -> Nắn phẳng.
+    Quy trình ghép nối liên tục (Chuẩn hóa API Tuần 4):
+    Ảnh gốc -> Resize chuẩn hóa -> Dò biên (Canny tùy biến hoặc Robust Pipeline) -> Tìm 4 đỉnh -> Map về ảnh gốc -> Nắn phẳng.
 
     Args:
-        image (np.ndarray): Ảnh tài liệu gốc.
+        image (np.ndarray): Ảnh tài liệu gốc (BGR hoặc Grayscale uint8).
         target_process_height (int): Chiều cao thu nhỏ để xử lý nhanh (mặc định 600px).
+        blur_kernel (Tuple[int, int]): Kích thước cửa sổ Gaussian Blur (mặc định (5, 5)).
+        low_threshold (Optional[int]): Ngưỡng dưới Canny (nếu None sẽ dùng robust_edge_detection).
+        high_threshold (Optional[int]): Ngưỡng trên Canny (nếu None sẽ dùng robust_edge_detection).
+        use_auto_canny (bool): Có bật chế độ tự động tính ngưỡng Canny theo trung vị hay không.
 
     Returns:
         Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
             (warped, orig_corners, edge_mask)
+            - warped: Ảnh sau khi biến đổi phối cảnh nắn phẳng (hoặc None nếu thất bại).
+            - orig_corners: Tọa độ 4 đỉnh đa giác trên ảnh gốc (TL, TR, BR, BL) shape (4, 2).
+            - edge_mask: Mặt nạ ảnh biên Canny / nhị phân để phục vụ hiển thị màn hình 2 (Module 5 UI).
     """
     if image is None:
         raise ValueError("Ảnh đầu vào là None. Vui lòng kiểm tra lại đường dẫn.")
@@ -232,8 +251,18 @@ def warp_document_pipeline(
     # 1. Resize chuẩn hóa
     resized, ratio = resize_image_with_ratio(image, target_height=target_process_height)
 
-    # 2. Dò biên hình thái học kết hợp
-    edge_mask = robust_edge_detection(resized)
+    # 2. Dò biên theo tùy chỉnh ngưỡng từ UI hoặc chạy robust pipeline mặc định
+    if low_threshold is not None and high_threshold is not None:
+        _, _, edge_mask = preprocess_and_detect_edges(
+            resized,
+            blur_kernel=blur_kernel,
+            low_threshold=low_threshold,
+            high_threshold=high_threshold,
+            use_auto_canny=use_auto_canny,
+            apply_morphology=True
+        )
+    else:
+        edge_mask = robust_edge_detection(resized, blur_kernel=blur_kernel)
 
     # 3. Tìm 4 góc trên ảnh thu nhỏ
     corners_small = get_paper_contour(edge_mask, min_area_ratio=0.04)
@@ -241,7 +270,7 @@ def warp_document_pipeline(
     # 4. Cơ chế Fallback đa phương thức bằng phân ngưỡng Otsu nếu mép Canny bị đứt
     if corners_small is None:
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY) if len(resized.shape) == 3 else resized
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        blurred = cv2.GaussianBlur(gray, blur_kernel, 0)
         _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         corners_small = get_paper_contour(thresh, min_area_ratio=0.04)
         if corners_small is None:
@@ -258,6 +287,74 @@ def warp_document_pipeline(
     warped, _ = four_point_transform(image, orig_corners)
 
     return warped, orig_corners, edge_mask
+
+
+# --------------------------------------------------------------------------
+# 5. Tiện ích trực quan hóa (Hỗ trợ Module 5 UI Desktop)
+# --------------------------------------------------------------------------
+def draw_detected_quad(
+    image: np.ndarray,
+    corners: Optional[np.ndarray],
+    line_color: Tuple[int, int, int] = (0, 255, 0),
+    line_thickness: Optional[int] = None,
+    draw_labels: bool = True
+) -> np.ndarray:
+    """
+    Tiện ích trực quan hóa cho Module 5 (UI CustomTkinter - Màn hình 1):
+    Vẽ khung đa giác nối 4 góc và gắn nhãn 4 đỉnh (TL, TR, BR, BL) lên ảnh gốc.
+
+    Args:
+        image (np.ndarray): Ảnh gốc (BGR hoặc Grayscale).
+        corners (Optional[np.ndarray]): Mảng (4, 2) tọa độ 4 đỉnh. Nếu None, trả về bản sao ảnh gốc.
+        line_color (Tuple[int, int, int]): Màu đường viền (BGR), mặc định xanh lá (0, 255, 0).
+        line_thickness (Optional[int]): Độ dày nét vẽ (tự động điều chỉnh theo độ phân giải ảnh nếu None).
+        draw_labels (bool): Có hiển thị nhãn TL, TR, BR, BL và chấm tròn đỉnh hay không.
+
+    Returns:
+        np.ndarray: Ảnh đã được vẽ khung viền trực quan.
+    """
+    vis = image.copy()
+    if corners is None:
+        return vis
+
+    h, w = vis.shape[:2]
+    ordered = order_points(corners)
+    pts = ordered.astype(int)
+
+    thickness = line_thickness if line_thickness is not None else max(2, int(max(h, w) / 400))
+    cv2.polylines(vis, [pts], isClosed=True, color=line_color, thickness=thickness)
+
+    if draw_labels:
+        labels = ["TL", "TR", "BR", "BL"]
+        colors = [(0, 0, 255), (255, 0, 0), (0, 255, 255), (255, 0, 255)]  # BGR
+        radius = max(5, int(max(h, w) / 150))
+        font_scale = max(0.5, max(h, w) / 1200.0)
+
+        for pt, label, col in zip(pts, labels, colors):
+            cv2.circle(vis, tuple(pt), radius, col, -1)
+            cv2.circle(vis, tuple(pt), radius + 2, (255, 255, 255), 2)
+            cv2.putText(
+                vis,
+                label,
+                (pt[0] + 10, pt[1] + 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (0, 0, 0),
+                thickness=3,
+                lineType=cv2.LINE_AA,
+            )
+            cv2.putText(
+                vis,
+                label,
+                (pt[0] + 10, pt[1] + 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (255, 255, 255),
+                thickness=1,
+                lineType=cv2.LINE_AA,
+            )
+
+    return vis
 
 
 # --------------------------------------------------------------------------
