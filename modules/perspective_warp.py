@@ -142,6 +142,11 @@ def order_points(pts: np.ndarray) -> np.ndarray:
             sao cho cạnh trên có phương ngang chuẩn nhất.
     """
     pts = np.asarray(pts, dtype="float32").reshape(4, 2)
+    if not np.isfinite(pts).all() or len(np.unique(pts, axis=0)) != 4:
+        raise ValueError("Cần 4 góc phân biệt, có tọa độ hữu hạn.")
+    hull = cv2.convexHull(pts)
+    if len(hull) != 4 or cv2.contourArea(hull) < 1.0:
+        raise ValueError("Bốn góc phải tạo thành tứ giác lồi có diện tích khác 0.")
     rect = np.zeros((4, 2), dtype="float32")
 
     s = pts[:, 0] + pts[:, 1]  # x + y
@@ -181,21 +186,23 @@ def four_point_transform(
 
     Toán học:
         - Tính chiều rộng và chiều cao cực đại của tứ giác để xác định kích thước ảnh đích.
-        - Tính ma trận Homography 3x3 (8 bậc tự do) từ 4 cặp điểm bằng SVD: cv2.getPerspectiveTransform.
+        - Tính ma trận Homography 3x3 (8 bậc tự do) từ 4 cặp điểm bằng cv2.getPerspectiveTransform.
         - Áp dụng Warping ngược (Inverse Mapping) với phép nội suy song tuyến (Bilinear Interpolation):
           cv2.warpPerspective.
     """
+    if image is None or image.size == 0:
+        raise ValueError("Ảnh đầu vào rỗng.")
     rect = order_points(pts)
     tl, tr, br, bl = rect
 
     # Kích thước ảnh đích = cạnh dài hơn trong mỗi cặp cạnh đối diện
     width_top = np.linalg.norm(tr - tl)
     width_bottom = np.linalg.norm(br - bl)
-    max_w = max(100, int(round(max(width_top, width_bottom))))
+    max_w = max(2, int(round(max(width_top, width_bottom))))
 
     height_left = np.linalg.norm(bl - tl)
     height_right = np.linalg.norm(br - tr)
-    max_h = max(100, int(round(max(height_left, height_right))))
+    max_h = max(2, int(round(max(height_left, height_right))))
 
     dst = np.array([
         [0, 0],
@@ -245,19 +252,26 @@ def warp_document_pipeline(
             - orig_corners: Tọa độ 4 đỉnh đa giác trên ảnh gốc (TL, TR, BR, BL) shape (4, 2).
             - edge_mask: Mặt nạ ảnh biên Canny / nhị phân để phục vụ hiển thị màn hình 2 (Module 5 UI).
     """
-    if image is None:
+    if image is None or image.size == 0:
         raise ValueError("Ảnh đầu vào là None. Vui lòng kiểm tra lại đường dẫn.")
+
+    if target_process_height < 2:
+        raise ValueError("Chiều cao xử lý phải >= 2.")
+    if (low_threshold is None) != (high_threshold is None):
+        raise ValueError("Cần truyền đồng thời hai ngưỡng Canny.")
+    if low_threshold is not None and not 0 <= low_threshold < high_threshold <= 255:
+        raise ValueError("Ngưỡng Canny phải thỏa 0 <= low < high <= 255.")
 
     # 1. Resize chuẩn hóa
     resized, ratio = resize_image_with_ratio(image, target_height=target_process_height)
 
     # 2. Dò biên theo tùy chỉnh ngưỡng từ UI hoặc chạy robust pipeline mặc định
-    if low_threshold is not None and high_threshold is not None:
+    if use_auto_canny or (low_threshold is not None and high_threshold is not None):
         _, _, edge_mask = preprocess_and_detect_edges(
             resized,
             blur_kernel=blur_kernel,
-            low_threshold=low_threshold,
-            high_threshold=high_threshold,
+            low_threshold=50 if low_threshold is None else low_threshold,
+            high_threshold=150 if high_threshold is None else high_threshold,
             use_auto_canny=use_auto_canny,
             apply_morphology=True
         )
@@ -281,7 +295,12 @@ def warp_document_pipeline(
         return None, None, edge_mask
 
     # 5. Ánh xạ 4 góc về kích thước ảnh gốc chất lượng cao
-    orig_corners = corners_small * ratio
+    # Dùng tỷ lệ riêng mỗi trục do chiều rộng resize bị làm tròn.
+    scale_xy = np.array([image.shape[1] / resized.shape[1],
+                         image.shape[0] / resized.shape[0]], dtype=np.float32)
+    orig_corners = order_points(corners_small * scale_xy)
+    orig_corners[:, 0] = np.clip(orig_corners[:, 0], 0, image.shape[1] - 1)
+    orig_corners[:, 1] = np.clip(orig_corners[:, 1], 0, image.shape[0] - 1)
 
     # 6. Nắn phẳng phối cảnh trên ảnh gốc
     warped, _ = four_point_transform(image, orig_corners)
@@ -313,7 +332,7 @@ def draw_detected_quad(
     Returns:
         np.ndarray: Ảnh đã được vẽ khung viền trực quan.
     """
-    vis = image.copy()
+    vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
     if corners is None:
         return vis
 
@@ -392,7 +411,7 @@ if __name__ == "__main__":
         for lbl, pt in zip(labels, ordered):
             print(f"   + {lbl:12s}: x={pt[0]:.1f}, y={pt[1]:.1f}")
         print(f"[*] Kích thước bản scan sau nắn phẳng: {warped.shape}")
-        print("=> Module 2 hoạt động chính xác 100%!")
+        print("=> Đã nắn ảnh; cần kiểm tra trực quan kết quả.")
     else:
         print("[!] Không tìm thấy tài liệu trong ảnh!")
     print("=" * 65)
