@@ -29,7 +29,8 @@ Document_Scanner_Perspective_Correction/
 ├── dataset/
 │   ├── raw/                         # Bộ dữ liệu 27 ảnh chụp thực nghiệm (TV5)
 │   └── output/                      # Kết quả trực quan qua các tuần thực nghiệm
-├── main_app.py                      # Giao diện ứng dụng chính (Giai đoạn 2)
+├── desktop_app.py                   # Giao diện desktop CustomTkinter
+├── main_app.py                      # Pipeline quét tài liệu qua dòng lệnh
 ├── requirements.txt                 # Danh sách thư viện phụ thuộc
 └── README.md
 ```
@@ -43,6 +44,19 @@ Yêu cầu Python >= 3.8:
 ```bash
 pip install -r requirements.txt
 ```
+
+---
+
+## 🖥️ Chạy ứng dụng giao diện
+
+```bash
+python desktop_app.py
+```
+
+Sau khi nắn phẳng tài liệu tự động hoặc chọn thủ công 4 góc, nhấn **Nâng cao
+chất lượng** để chạy Module 4. Có thể chọn xem ảnh cân bằng sáng, ảnh làm nét
+hoặc ảnh nhị phân, rồi lưu riêng kết quả đang xem; nút **Lưu bản scan** vẫn lưu
+ảnh đã nắn phẳng ban đầu.
 
 ---
 

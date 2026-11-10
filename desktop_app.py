@@ -34,6 +34,8 @@ import customtkinter as ctk
 
 from PIL import Image, ImageTk, ImageOps
 
+from modules.image_enhancer import enhance_document
+
 
 # ============================================================
 # 1. CẤU HÌNH GIAO DIỆN
@@ -853,6 +855,7 @@ class DocumentScannerApp(ctk.CTk):
         self.original_image = None
         self.canny_image = None
         self.scanned_image = None
+        self.enhanced_images = {}
 
         self.image_path = None
 
@@ -888,7 +891,7 @@ class DocumentScannerApp(ctk.CTk):
         )
 
         self.grid_rowconfigure(
-            2, weight=1
+            3, weight=1
         )
 
         # ----------------------------------------------------
@@ -1040,7 +1043,75 @@ class DocumentScannerApp(ctk.CTk):
         )
 
         # ----------------------------------------------------
-        # BA KHUNG SO SÁNH
+        # ĐIỀU KHIỂN NÂNG CAO CHẤT LƯỢNG ẢNH
+        # ----------------------------------------------------
+
+        enhancement_toolbar = ctk.CTkFrame(
+            self,
+            fg_color=PANEL
+        )
+
+        enhancement_toolbar.grid(
+            row=2,
+            column=0,
+            padx=15,
+            pady=(0, 8),
+            sticky="ew"
+        )
+
+        self.btn_enhance = ctk.CTkButton(
+            enhancement_toolbar,
+            text="Nâng cao chất lượng",
+            width=165,
+            fg_color=GREEN,
+            command=self.enhance_image
+        )
+
+        self.btn_enhance.pack(
+            side="left",
+            padx=(12, 8),
+            pady=9
+        )
+
+        ctk.CTkLabel(
+            enhancement_toolbar,
+            text="Kết quả:",
+            text_color=TEXT
+        ).pack(
+            side="left",
+            padx=(8, 5)
+        )
+
+        self.enhancement_selector = ctk.CTkOptionMenu(
+            enhancement_toolbar,
+            values=[
+                "Cân bằng sáng",
+                "Làm nét",
+                "Nhị phân"
+            ],
+            command=self.select_enhancement
+        )
+
+        self.enhancement_selector.pack(
+            side="left",
+            padx=5,
+            pady=9
+        )
+
+        self.btn_save_enhanced = ctk.CTkButton(
+            enhancement_toolbar,
+            text="Lưu kết quả nâng cao",
+            width=175,
+            command=self.save_enhanced_image
+        )
+
+        self.btn_save_enhanced.pack(
+            side="left",
+            padx=8
+        )
+
+        # ----------------------------------------------------
+        # CÁC KHUNG SO SÁNH
         # ----------------------------------------------------
 
         content = ctk.CTkFrame(
@@ -1049,7 +1120,7 @@ class DocumentScannerApp(ctk.CTk):
         )
 
         content.grid(
-            row=2,
+            row=3,
             column=0,
             padx=15,
             pady=8,
@@ -1063,7 +1134,8 @@ class DocumentScannerApp(ctk.CTk):
         panels = [
             ("original", "01 - ẢNH GỐC"),
             ("canny", "02 - BIÊN CANNY"),
-            ("scanned", "03 - BẢN SCAN NẮN PHẲNG")
+            ("scanned", "03 - BẢN SCAN NẮN PHẲNG"),
+            ("enhanced", "04 - KẾT QUẢ NÂNG CAO")
         ]
 
         for index, (key, title) in enumerate(panels):
@@ -1150,7 +1222,7 @@ class DocumentScannerApp(ctk.CTk):
         )
 
         self.status_label.grid(
-            row=3,
+            row=4,
             column=0,
             padx=25,
             pady=(5, 12),
@@ -1177,6 +1249,9 @@ class DocumentScannerApp(ctk.CTk):
             self.btn_rotate_left,
             self.btn_rotate_right,
             self.btn_save,
+            self.btn_enhance,
+            self.enhancement_selector,
+            self.btn_save_enhanced,
             self.btn_reset
         )
 
@@ -1189,6 +1264,7 @@ class DocumentScannerApp(ctk.CTk):
 
         has_original = self.original_image is not None
         has_scan = self.scanned_image is not None
+        has_enhancement = bool(self.enhanced_images)
 
         self.btn_open.configure(
             state="normal"
@@ -1214,6 +1290,18 @@ class DocumentScannerApp(ctk.CTk):
             button.configure(
                 state="normal" if has_scan else "disabled"
             )
+
+        self.btn_enhance.configure(
+            state="normal" if has_scan else "disabled"
+        )
+
+        self.enhancement_selector.configure(
+            state="normal" if has_enhancement else "disabled"
+        )
+
+        self.btn_save_enhanced.configure(
+            state="normal" if has_enhancement else "disabled"
+        )
 
     # ========================================================
     # 7. CHỌN ẢNH
@@ -1258,9 +1346,11 @@ class DocumentScannerApp(ctk.CTk):
 
             self.canny_image = None
             self.scanned_image = None
+            self.enhanced_images.clear()
 
             self.clear_panel("canny")
             self.clear_panel("scanned")
+            self.clear_panel("enhanced")
 
             self.display_image(
                 "original",
@@ -1329,6 +1419,8 @@ class DocumentScannerApp(ctk.CTk):
 
             self.canny_image = canny
             self.scanned_image = scanned
+            self.enhanced_images.clear()
+            self.clear_panel("enhanced")
 
             self.display_image(
                 "canny",
@@ -1374,9 +1466,11 @@ class DocumentScannerApp(ctk.CTk):
 
             self.canny_image = None
             self.scanned_image = None
+            self.enhanced_images.clear()
 
             self.clear_panel("canny")
             self.clear_panel("scanned")
+            self.clear_panel("enhanced")
 
             self.set_status(
                 "Xử lý ảnh thất bại.",
@@ -1419,6 +1513,8 @@ class DocumentScannerApp(ctk.CTk):
             )
 
             self.scanned_image = scanned
+            self.enhanced_images.clear()
+            self.clear_panel("enhanced")
 
             self.display_image(
                 "scanned",
@@ -1452,7 +1548,7 @@ class DocumentScannerApp(ctk.CTk):
 
             self.set_status(
                 "Đã nắn phẳng bằng 4 góc thủ công. "
-                "Có thể xoay ảnh trái/phải."
+                "Có thể xoay ảnh trái/phải hoặc nâng cao chất lượng."
             )
 
             self.update_buttons()
@@ -1476,6 +1572,11 @@ class DocumentScannerApp(ctk.CTk):
     # 10. XOAY ẢNH SCAN
     # ========================================================
 
+    def clear_enhancement(self):
+        self.enhanced_images.clear()
+        self.clear_panel("enhanced")
+        self.update_buttons()
+
     def rotate_left(self):
         """
         Xoay bản scan 90 độ ngược chiều kim đồng hồ.
@@ -1488,6 +1589,7 @@ class DocumentScannerApp(ctk.CTk):
             self.scanned_image,
             cv2.ROTATE_90_COUNTERCLOCKWISE
         )
+        self.clear_enhancement()
 
         self.display_image(
             "scanned",
@@ -1510,6 +1612,7 @@ class DocumentScannerApp(ctk.CTk):
             self.scanned_image,
             cv2.ROTATE_90_CLOCKWISE
         )
+        self.clear_enhancement()
 
         self.display_image(
             "scanned",
@@ -1521,7 +1624,81 @@ class DocumentScannerApp(ctk.CTk):
         )
 
     # ========================================================
-    # 11. HIỂN THỊ ẢNH LÊN CANVAS
+    # 11. NÂNG CAO CHẤT LƯỢNG ẢNH (MODULE 4)
+    # ========================================================
+
+    def enhance_image(self):
+
+        if self.scanned_image is None or self.processing:
+            return
+
+        self.processing = True
+        self.update_buttons()
+        self.set_status(
+            "Đang cân bằng sáng, làm nét và nhị phân hóa..."
+        )
+
+        self.process_job = self.after(
+            40,
+            self.run_enhancement
+        )
+
+    def run_enhancement(self):
+
+        self.process_job = None
+
+        try:
+            corrected, sharpened, binary = enhance_document(
+                self.scanned_image,
+                sigma=25.0,
+                sharpen_strength=1.2,
+                block_size=31,
+                C=10.0
+            )
+
+            self.enhanced_images = {
+                "Cân bằng sáng": corrected,
+                "Làm nét": sharpened,
+                "Nhị phân": binary
+            }
+
+            self.select_enhancement(
+                self.enhancement_selector.get()
+            )
+
+            self.set_status(
+                "Đã tăng cường chất lượng ảnh. "
+                "Chọn kết quả muốn xem hoặc lưu."
+            )
+
+        except Exception as error:
+
+            traceback.print_exc()
+
+            self.set_status(
+                "Tăng cường chất lượng ảnh thất bại.",
+                error=True
+            )
+
+            messagebox.showerror(
+                "Lỗi nâng cao ảnh",
+                str(error),
+                parent=self
+            )
+
+        finally:
+            self.processing = False
+            self.update_buttons()
+
+    def select_enhancement(self, selection):
+
+        image = self.enhanced_images.get(selection)
+
+        if image is not None:
+            self.display_image("enhanced", image)
+
+    # ========================================================
+    # 12. HIỂN THỊ ẢNH LÊN CANVAS
     # ========================================================
 
     def display_image(self, key, image):
@@ -1646,7 +1823,7 @@ class DocumentScannerApp(ctk.CTk):
         self.photo_refs[key] = photo
 
     # ========================================================
-    # 12. PLACEHOLDER VÀ XÓA ẢNH
+    # 13. PLACEHOLDER VÀ XÓA ẢNH
     # ========================================================
 
     def draw_placeholder(self, key):
@@ -1709,7 +1886,7 @@ class DocumentScannerApp(ctk.CTk):
         self.draw_placeholder(key)
 
     # ========================================================
-    # 13. LƯU ẢNH SCAN
+    # 14. LƯU ẢNH SCAN
     # ========================================================
 
     def save_image(self):
@@ -1797,8 +1974,66 @@ class DocumentScannerApp(ctk.CTk):
                 parent=self
             )
 
+    def save_enhanced_image(self):
+
+        selection = self.enhancement_selector.get()
+        image = self.enhanced_images.get(selection)
+
+        if image is None:
+            messagebox.showwarning(
+                "Thông báo",
+                "Chưa có kết quả nâng cao để lưu.",
+                parent=self
+            )
+            return
+
+        file_stem = selection.lower().replace(" ", "_")
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Lưu kết quả nâng cao",
+            defaultextension=".png",
+            initialfile=f"document_{file_stem}.png",
+            filetypes=[
+                ("PNG Image", "*.png"),
+                ("JPEG Image", "*.jpg")
+            ]
+        )
+
+        if not path:
+            return
+
+        try:
+            extension = os.path.splitext(path)[1].lower()
+
+            if extension not in (".png", ".jpg", ".jpeg"):
+                raise ValueError("Định dạng lưu không hợp lệ.")
+
+            success, encoded = cv2.imencode(extension, image)
+
+            if not success:
+                raise ValueError("Không thể mã hóa kết quả nâng cao.")
+
+            encoded.tofile(path)
+            self.set_status(f"Đã lưu kết quả nâng cao: {path}")
+
+            messagebox.showinfo(
+                "Thành công",
+                f"Đã lưu kết quả nâng cao ({selection}) thành công!\n\n{path}",
+                parent=self
+            )
+
+        except Exception as error:
+            traceback.print_exc()
+            self.set_status("Lưu kết quả nâng cao thất bại.", error=True)
+
+            messagebox.showerror(
+                "Lỗi lưu ảnh",
+                str(error),
+                parent=self
+            )
+
     # ========================================================
-    # 14. LÀM MỚI ỨNG DỤNG
+    # 15. LÀM MỚI ỨNG DỤNG
     # ========================================================
 
     def reset_images(self):
@@ -1809,6 +2044,7 @@ class DocumentScannerApp(ctk.CTk):
         self.original_image = None
         self.canny_image = None
         self.scanned_image = None
+        self.enhanced_images.clear()
 
         self.image_path = None
 
@@ -1822,7 +2058,7 @@ class DocumentScannerApp(ctk.CTk):
         self.update_buttons()
 
     # ========================================================
-    # 15. ĐÓNG ỨNG DỤNG
+    # 16. ĐÓNG ỨNG DỤNG
     # ========================================================
 
     def on_close(self):
@@ -1859,7 +2095,7 @@ class DocumentScannerApp(ctk.CTk):
 
 
 # ============================================================
-# 16. KHỞI CHẠY CHƯƠNG TRÌNH
+# 17. KHỞI CHẠY CHƯƠNG TRÌNH
 # ============================================================
 
 def main():
