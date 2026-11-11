@@ -6,3 +6,6 @@ pillow>=10.0.0
 
 # Desktop GUI - TV5 (Khanh)
 customtkinter>=5.2.0
+
+# PDF Export - TV5 Week 5
+reportlab>=4.0.0
